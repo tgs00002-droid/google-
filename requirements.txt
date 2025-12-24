@@ -3,319 +3,353 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
+import os
 
 # ==========================================
-# 1. Configuration & Style
+# 1. APP CONFIGURATION & STYLING
 # ==========================================
 st.set_page_config(
     page_title="Strategic Financial Intelligence",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    page_icon="📈"
 )
 
-# Custom CSS for a professional "Google-like" look
+# Custom CSS for a clean, professional "Google-Style" aesthetic
 st.markdown("""
     <style>
+    /* Main container styling */
+    .main { background-color: #ffffff; }
+    
+    /* Card styling for metrics and insights */
     .metric-card {
-        background-color: #f9f9f9;
+        background-color: #f8f9fa;
         padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #4285F4;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+        border-radius: 8px;
+        border-left: 5px solid #4285F4; /* Google Blue */
+        box-shadow: 0px 2px 4px rgba(0,0,0,0.05);
         margin-bottom: 20px;
+        font-family: 'Roboto', sans-serif;
     }
-    .metric-label { font-size: 14px; color: #5f6368; }
-    .metric-value { font-size: 24px; font-weight: bold; color: #202124; }
+    
+    /* Typography */
+    h1, h2, h3 { color: #202124; font-family: 'Google Sans', sans-serif; }
     .highlight { color: #4285F4; font-weight: bold; }
+    .metric-label { font-size: 14px; color: #5f6368; }
+    .metric-value { font-size: 28px; font-weight: 700; color: #202124; }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. Data Engine (The "Brain")
+# 2. DATA ARCHITECTURE (The Logic Layer)
 # ==========================================
 class FinancialEngine:
     """
-    Handles all ETL (Extract, Transform, Load) and metric engineering.
-    Decoupling logic from presentation makes this scalable and testable.
+    Acts as the 'Single Source of Truth'. 
+    Handles data loading, cleaning, and advanced metric calculation.
     """
     def __init__(self, file_path):
-        self.raw_data = pd.read_csv(file_path)
-        self.df = self._process_data()
+        self.file_path = file_path
+        self.raw_data = None
+        self.df = None
+        self._load_data()
+
+    def _load_data(self):
+        if not os.path.exists(self.file_path):
+            st.error(f"⚠️ Error: '{self.file_path}' not found. Please ensure the CSV is in the same folder.")
+            st.stop()
+        self.raw_data = pd.read_csv(self.file_path)
+        self._process_data()
 
     def _process_data(self):
+        """Feature Engineering for advanced insights."""
         df = self.raw_data.copy()
         df = df.sort_values('year')
         
-        # --- Feature Engineering ---
-        # 1. Rule of 40 (Growth + Margin)
-        # Note: Depending on your CSV, if data is 0.25 for 25%, multiply by 100.
-        # If data is already 25, keep as is. Logic below assumes decimals based on snippets.
+        # --- Metric 1: The Rule of 40 (Growth + Margin) ---
+        # Logic: (Revenue Growth % * 100) + (Operating Margin % * 100)
+        # We assume input data is decimal (e.g., 0.25). We convert to integer score (e.g., 25).
         df['rule_of_40'] = (df['revenue_yoy'] * 100) + (df['operating_margin'] * 100)
         
-        # 2. Operating Leverage (Op Income Growth / Revenue Growth)
-        # Calculate Op Income Growth first if not present
+        # --- Metric 2: Operating Leverage ---
+        # Logic: Are profits growing faster than revenue?
         df['op_income_yoy'] = df['operating_income'].pct_change()
         df['operating_leverage'] = df['op_income_yoy'] / df['revenue_yoy']
         
-        # 3. Clean large numbers for display
+        # --- Formatting: Billions for readability ---
         df['revenue_B'] = df['revenue'] / 1e9
-        df['op_income_B'] = df['operating_income'] / 1e9
         
-        return df
+        self.df = df
 
-    def get_latest_metrics(self):
+    def get_kpis(self):
+        """Returns the most recent year's key performance indicators."""
         latest = self.df.iloc[-1]
         prev = self.df.iloc[-2]
+        
         return {
             'year': int(latest['year']),
             'revenue': latest['revenue_B'],
-            'rev_growth': latest['revenue_yoy'],
+            'growth': latest['revenue_yoy'],
             'margin': latest['operating_margin'],
             'rule_40': latest['rule_of_40'],
-            'delta_rev': (latest['revenue'] - prev['revenue']) / 1e9
+            'beta': 1.05 # Placeholder: In a real app, calculate relative to SP500
         }
 
     def generate_forecast(self, base_growth, bull_adj, bear_adj, years=3):
-        """Generates 3 scenarios: Base, Bull, and Bear case."""
+        """
+        Creates a DataFrame containing 3 scenario paths (Base, Bull, Bear).
+        Uses Driver-Based Modeling.
+        """
         last_year = self.df['year'].max()
         last_rev = self.df['revenue'].iloc[-1]
         
         scenarios = []
-        for year_idx in range(1, years + 1):
-            curr_year = last_year + year_idx
+        for i in range(1, years + 1):
+            curr_year = last_year + i
             
-            # Base Case
-            base_rev = last_rev * ((1 + base_growth) ** year_idx)
-            scenarios.append({'Year': curr_year, 'Revenue': base_rev / 1e9, 'Scenario': 'Base Case'})
+            # Scenario Calculations
+            # 1. Base Case: User defined input
+            base_rev = last_rev * ((1 + base_growth) ** i)
+            scenarios.append({'Year': curr_year, 'Revenue': base_rev/1e9, 'Scenario': 'Base Case'})
             
-            # Bull Case
-            bull_rev = last_rev * ((1 + base_growth + bull_adj) ** year_idx)
-            scenarios.append({'Year': curr_year, 'Revenue': bull_rev / 1e9, 'Scenario': 'Bull Case'})
+            # 2. Bull Case: Optimistic Macro (+ adjustment)
+            bull_rev = last_rev * ((1 + base_growth + bull_adj) ** i)
+            scenarios.append({'Year': curr_year, 'Revenue': bull_rev/1e9, 'Scenario': 'Bull Case'})
             
-            # Bear Case
-            bear_rev = last_rev * ((1 + base_growth - bear_adj) ** year_idx)
-            scenarios.append({'Year': curr_year, 'Revenue': bear_rev / 1e9, 'Scenario': 'Bear Case'})
+            # 3. Bear Case: Pessimistic Macro (- adjustment)
+            bear_rev = last_rev * ((1 + base_growth - bear_adj) ** i)
+            scenarios.append({'Year': curr_year, 'Revenue': bear_rev/1e9, 'Scenario': 'Bear Case'})
             
         return pd.DataFrame(scenarios)
 
 # ==========================================
-# 3. Visualization Class
+# 3. VISUALIZATION ENGINE (The Presentation Layer)
 # ==========================================
 class ChartBuilder:
     """
-    Dedicated class for generating Plotly charts.
-    Ensures consistent styling across the app.
+    Dedicated class for professional Plotly charts.
+    Ensures consistent brand colors (Google Blue/Green/Red).
     """
+    COLOR_BLUE = '#4285F4'
+    COLOR_GREEN = '#34A853'
+    COLOR_RED = '#EA4335'
+    COLOR_GRAY = '#B0B0B0'
+
     @staticmethod
     def plot_divergence(df):
+        """Compares Fundamental Growth vs. Market Valuation."""
         fig = go.Figure()
         
-        # Revenue Line
+        # Fundamentals (Revenue)
         fig.add_trace(go.Scatter(
             x=df['year'], y=df['revenue_index'],
-            name='Fundamental Growth (Revenue)',
+            name='Revenue Index (Fundamentals)',
             mode='lines+markers',
-            line=dict(color='#4285F4', width=3)
+            line=dict(color=ChartBuilder.COLOR_BLUE, width=3)
         ))
         
-        # Stock Line
+        # Sentiment (Stock Price)
         fig.add_trace(go.Scatter(
             x=df['year'], y=df['stock_index'],
-            name='Market Valuation (Stock Price)',
+            name='Stock Price Index (Market)',
             mode='lines+markers',
-            line=dict(color='#34A853', width=3, dash='dot')
+            line=dict(color=ChartBuilder.COLOR_GREEN, width=3, dash='dot')
         ))
         
         fig.update_layout(
-            title="Valuation Reality Check: Fundamentals vs. Hype",
-            xaxis_title="Year",
+            title="<b>Valuation Reality Check:</b> Fundamentals vs. Sentiment",
+            xaxis_title="Fiscal Year",
             yaxis_title="Index (Base=100)",
             template="plotly_white",
             height=400,
-            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(255,255,255,0.8)")
+            hovermode="x unified",
+            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
         )
         return fig
 
     @staticmethod
     def plot_rule_of_40(df):
-        # Filter out NaN/Inf for clean plotting
-        clean_df = df.dropna(subset=['revenue_yoy', 'operating_margin', 'revenue_B'])
+        """Scatter plot for Growth vs. Profitability."""
+        # Filter for clean data
+        clean_df = df.dropna(subset=['revenue_yoy', 'operating_margin'])
         
         fig = px.scatter(
             clean_df, x='revenue_yoy', y='operating_margin',
             size='revenue_B', color='year',
-            title="The 'Rule of 40' Trade-off: Growth vs. Profitability",
-            labels={'revenue_yoy': 'Revenue Growth', 'operating_margin': 'Operating Margin'},
+            title="<b>Efficiency Frontier:</b> The Rule of 40",
+            labels={'revenue_yoy': 'Revenue Growth (%)', 'operating_margin': 'Operating Margin (%)'},
             template="plotly_white",
-            color_continuous_scale=px.colors.sequential.Bluered,
+            color_continuous_scale=px.colors.sequential.Blues,
             height=400
         )
         
-        # Add the 'Rule of 40' threshold line (x + y = 0.40)
-        x_range = np.linspace(clean_df['revenue_yoy'].min(), clean_df['revenue_yoy'].max(), 100)
-        y_range = 0.40 - x_range
+        # Add Reference Line (The "40%" threshold)
+        # Equation: y = 0.40 - x
+        x_line = np.linspace(clean_df['revenue_yoy'].min(), clean_df['revenue_yoy'].max(), 100)
+        y_line = 0.40 - x_line
         
         fig.add_trace(go.Scatter(
-            x=x_range, y=y_range, mode='lines', 
-            name='Rule of 40 Threshold',
-            line=dict(color='gray', dash='dash')
+            x=x_line, y=y_line, mode='lines', name='Rule of 40 Target',
+            line=dict(color=ChartBuilder.COLOR_GRAY, dash='dash')
         ))
         
         return fig
 
     @staticmethod
-    def plot_forecast(hist_df, pred_df):
+    def plot_forecast(hist_df, forecast_df):
+        """Connects historical actuals with future scenarios."""
         fig = go.Figure()
         
-        # Historical Data
+        # Historicals
         fig.add_trace(go.Scatter(
             x=hist_df['year'], y=hist_df['revenue_B'],
-            name='Historical Revenue',
-            line=dict(color='#202124', width=3)
+            name='Actuals',
+            line=dict(color='#202124', width=4)
         ))
         
-        # Forecast Scenarios
-        colors = {'Base Case': '#4285F4', 'Bull Case': '#34A853', 'Bear Case': '#EA4335'}
+        # Scenarios
+        colors = {'Base Case': ChartBuilder.COLOR_BLUE, 
+                  'Bull Case': ChartBuilder.COLOR_GREEN, 
+                  'Bear Case': ChartBuilder.COLOR_RED}
         
-        for scenario in pred_df['Scenario'].unique():
-            subset = pred_df[pred_df['Scenario'] == scenario]
+        for scenario in forecast_df['Scenario'].unique():
+            subset = forecast_df[forecast_df['Scenario'] == scenario]
             fig.add_trace(go.Scatter(
                 x=subset['Year'], y=subset['Revenue'],
                 name=scenario,
-                line=dict(color=colors[scenario], width=2, dash='dash' if scenario != 'Base Case' else 'solid')
+                line=dict(color=colors[scenario], width=2, dash='dash')
             ))
             
         fig.update_layout(
-            title="Forward-Looking Scenarios (Driver-Based)",
+            title="<b>Forward Guidance:</b> 3-Year Revenue Scenarios",
             yaxis_title="Revenue ($ Billions)",
             xaxis_title="Year",
             template="plotly_white",
-            height=400
+            height=450,
+            hovermode="x unified"
         )
         return fig
 
 # ==========================================
-# 4. Main App Logic
+# 4. MAIN APPLICATION
 # ==========================================
 def main():
-    # Load Data
-    try:
-        engine = FinancialEngine('master.csv')
-    except Exception as e:
-        st.error(f"Error loading data: {e}. Please ensure 'master.csv' is in the directory.")
-        return
-
-    # Sidebar: Controls
-    st.sidebar.title("🎮 Analyst Controls")
+    # --- Sidebar Controls ---
+    st.sidebar.header("🎛️ Analyst Controls")
+    st.sidebar.write("Adjust assumptions to update the forecast model.")
     
-    st.sidebar.markdown("### Forecast Assumptions")
-    growth_input = st.sidebar.slider("Base Revenue Growth Rate", 0.0, 0.30, 0.12, 0.01, format="%.2f")
-    
-    st.sidebar.markdown("### Macro Factors")
-    macro_impact = st.sidebar.selectbox("Economic Outlook", ["Neutral", "Recessionary (-5%)", "Expansionary (+5%)"])
-    
-    # Dynamic Scenario Logic
-    bull_adj = 0.05
-    bear_adj = 0.05
-    
-    # Adjust base growth based on macro toggle
-    if macro_impact == "Recessionary (-5%)":
-        growth_input = max(0.0, growth_input - 0.05)
-    elif macro_impact == "Expansionary (+5%)":
-        growth_input += 0.05
-        
-    st.sidebar.info(f"Active Growth Driver: **{growth_input:.1%}**")
-
-    # --- HEADER SECTION ---
-    st.title("📊 Strategic Financial Intelligence Dashboard")
-    st.markdown("""
-    This dashboard provides a centralized view of firm fundamentals, market valuation, 
-    and forward-looking scenarios to support capital allocation decisions.
-    """)
-    st.markdown("---")
-    
-    # Top Level Metrics
-    metrics = engine.get_latest_metrics()
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("FY Revenue", f"${metrics['revenue']:.1f}B", f"{metrics['rev_growth']:.1%}")
-    col2.metric("Op Margin", f"{metrics['margin']:.1%}", "Stable")
-    col3.metric("Rule of 40 Score", f"{metrics['rule_40']:.0f}", "Target > 40")
-    col4.metric("Market Beta", "1.05", "Neutral")
-
-    # --- SECTION 1: HISTORICAL ANALYSIS ---
-    st.markdown("### 1. Historical Performance & Valuation")
-    
-    c1, c2 = st.columns([2, 1])
-    
-    with c1:
-        # Chart: Divergence
-        fig_div = ChartBuilder.plot_divergence(engine.df)
-        st.plotly_chart(fig_div, use_container_width=True)
-    
-    with c2:
-        st.markdown(f"""
-        <div class="metric-card">
-        <b>💡 Analyst Insight: Valuation Decoupling</b><br><br>
-        We observe a divergence between <span class="highlight">Revenue Growth</span> (Fundamentals) 
-        and <span class="highlight">Stock Price</span> (Sentiment).<br><br>
-        While revenue grew at a steady CAGR, stock volatility was driven largely by 
-        multiple expansion rather than earnings surprises.
-        </div>
-        """, unsafe_allow_html=True)
-
-    # --- SECTION 2: EFFICIENCY ---
-    st.markdown("### 2. The Efficiency Frontier")
-    
-    c3, c4 = st.columns([1, 2])
-    
-    with c3:
-        st.markdown(f"""
-        <div class="metric-card">
-        <b>The "Rule of 40" Trade-off</b><br><br>
-        This chart plots <b>Growth vs. Margin</b>.<br>
-        <ul>
-        <li><b>Top Right:</b> High Growth, High Profit (Unicorns)</li>
-        <li><b>Bottom Left:</b> Warning Zone</li>
-        </ul>
-        <br>
-        <b>Insight:</b> The company is maturing, moving from the top-right towards a stable, 
-        cash-cow position (lower right).
-        </div>
-        """, unsafe_allow_html=True)
-        
-    with c4:
-        fig_rule40 = ChartBuilder.plot_rule_of_40(engine.df)
-        st.plotly_chart(fig_rule40, use_container_width=True)
-
-    # --- SECTION 3: FORECASTING ---
-    st.markdown("### 3. Forward-Looking Scenarios")
-    
-    # Generate Data
-    forecast_df = engine.generate_forecast(
-        base_growth=growth_input, 
-        bull_adj=bull_adj, 
-        bear_adj=bear_adj
+    # 1. Growth Driver
+    base_growth = st.sidebar.slider(
+        "Base Revenue Growth (%)", 
+        min_value=0.0, max_value=0.30, value=0.12, step=0.01, format="%.2f"
     )
     
-    c5, c6 = st.columns([2, 1])
+    # 2. Macro Driver
+    macro_outlook = st.sidebar.selectbox(
+        "Macro Economic Outlook", 
+        ["Neutral", "Recessionary (-500bps)", "Expansionary (+500bps)"]
+    )
     
-    with c5:
-        fig_forecast = ChartBuilder.plot_forecast(engine.df, forecast_df)
-        st.plotly_chart(fig_forecast, use_container_width=True)
-        
-    with c6:
+    # Logic to adjust model based on macro selection
+    bull_adj = 0.05
+    bear_adj = 0.05
+    if macro_outlook == "Recessionary (-500bps)":
+        base_growth = max(0.0, base_growth - 0.05)
+        st.sidebar.warning("📉 Adjusting Base Case down for recessionary environment.")
+    elif macro_outlook == "Expansionary (+500bps)":
+        base_growth += 0.05
+        st.sidebar.success("📈 Adjusting Base Case up for expansionary environment.")
+
+    # --- Load Data ---
+    engine = FinancialEngine('master.csv')
+    kpis = engine.get_kpis()
+
+    # --- Dashboard Header ---
+    st.title("📊 Strategic Financial Command Center")
+    st.markdown("Real-time view of firm fundamentals, market valuation, and strategic scenarios.")
+    st.markdown("---")
+
+    # --- Top Level Metrics ---
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("FY Revenue", f"${kpis['revenue']:.1f}B", f"{kpis['growth']:.1%}")
+    c2.metric("Op Margin", f"{kpis['margin']:.1%}", "Stable")
+    c3.metric("Rule of 40 Score", f"{kpis['rule_40']:.0f}", "Target > 40")
+    c4.metric("Implied Beta", f"{kpis['beta']}", "Neutral")
+
+    st.markdown("---")
+
+    # --- Section 1: Valuation Analysis ---
+    st.subheader("1. Valuation Reality Check")
+    col_viz1, col_txt1 = st.columns([2, 1])
+    
+    with col_viz1:
+        fig1 = ChartBuilder.plot_divergence(engine.df)
+        st.plotly_chart(fig1, use_container_width=True)
+    
+    with col_txt1:
         st.markdown("""
         <div class="metric-card">
-        <b>Scenario Logic</b><br><br>
-        <b>Base Case:</b> Assumes steady-state search volume and ad pricing.<br>
-        <b>Bull Case (+5%):</b> Driven by AI-monetization upside and macro recovery.<br>
-        <b>Bear Case (-5%):</b> Driven by regulatory headwinds or margin compression.
+        <b>💡 Analyst Note:</b><br><br>
+        We observe a distinct divergence between 
+        <span class="highlight">Fundamental Growth</span> and 
+        <span class="highlight">Market Price</span>.<br><br>
+        While revenue has compounded steadily, stock price volatility 
+        suggests valuation is being driven by external multiple expansion 
+        rather than internal performance surprises.
+        </div>
+        """, unsafe_allow_html=True)
+
+    # --- Section 2: Efficiency Analysis ---
+    st.subheader("2. The Efficiency Frontier (Rule of 40)")
+    col_txt2, col_viz2 = st.columns([1, 2])
+    
+    with col_txt2:
+        st.markdown("""
+        <div class="metric-card">
+        <b>Strategy Insight:</b><br><br>
+        The "Rule of 40" states that Growth Rate + Profit Margin should exceed 40.<br><br>
+        <b>Current Status:</b> The company is transitioning from a 
+        "Growth at all costs" phase (Top Right) to a mature "Cash Cow" 
+        phase (Lower Right).
         </div>
         """, unsafe_allow_html=True)
         
-        with st.expander("View Forecast Data"):
-            st.dataframe(forecast_df.set_index('Year'))
+    with col_viz2:
+        fig2 = ChartBuilder.plot_rule_of_40(engine.df)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # --- Section 3: Scenario Planning ---
+    st.subheader("3. Strategic Forecast Model")
+    
+    # Run Forecast Logic
+    forecast_df = engine.generate_forecast(base_growth, bull_adj, bear_adj)
+    
+    col_viz3, col_txt3 = st.columns([2, 1])
+    
+    with col_viz3:
+        fig3 = ChartBuilder.plot_forecast(engine.df, forecast_df)
+        st.plotly_chart(fig3, use_container_width=True)
+        
+    with col_txt3:
+        st.markdown(f"""
+        <div class="metric-card">
+        <b>Model Assumptions:</b><br>
+        <ul>
+        <li><b>Base Case ({base_growth:.1%}):</b> Consensus estimates.</li>
+        <li><b>Bull Case:</b> AI monetization success + macro tailwinds.</li>
+        <li><b>Bear Case:</b> Regulatory pressure + margin compression.</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Download Button (Product Feature)
+        csv = forecast_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "📥 Download Scenario Data",
+            data=csv,
+            file_name="forecast_scenarios.csv",
+            mime="text/csv"
+        )
 
 if __name__ == "__main__":
     main()
