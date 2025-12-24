@@ -1,3 +1,11 @@
-streamlit
-pandas
-plotly
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from scipy.stats import norm
+from sklearn.linear_model import LinearRegression
+from dataclasses import dataclass
+from typing import Tuple, List, Dict
+import datetime
