@@ -1,17 +1,21 @@
 """
 ================================================================================
-GOOGLE FINANCIAL ANALYST CANDIDATE DASHBOARD
+TITAN FINANCIAL INTELLIGENCE FRAMEWORK (v2.0.4)
 ================================================================================
-Author: [Your Name]
-Purpose: Interactive Financial Deep-Dive into Google's Historical Performance
-Target Audience: Hiring Committee, Google Finance Team
+CONFIDENTIAL: For Internal Strategy Review Only
+AUTHOR: Senior Financial Analyst
+DATE: 2023-10-27
 
-Technology Stack:
-- Streamlit: For rapid UI deployment
-- Pandas/NumPy: For vectorized financial computation
-- Plotly: For interactive, executive-grade visualizations
-- Scikit-Learn: For predictive modeling (Revenue Forecasting)
-- SciPy: For statistical risk analysis
+DESCRIPTION:
+This framework provides a holistic view of Google's (Alphabet) financial health.
+It utilizes a modular architecture to separate data ingestion, quantitative 
+modeling, and user interface rendering.
+
+ARCHITECTURE:
+1. DataIngestionLayer: Robust CSV parsing and type enforcement.
+2. QuantitativeEngine: Statistical computing (VaR, Monte Carlo, CAGR).
+3. VisualLayer: Plotly-based interactive rendering.
+4. DashboardController: Streamlit application logic.
 
 ================================================================================
 """
@@ -22,325 +26,304 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-from scipy import stats
+from scipy.stats import norm
 from sklearn.linear_model import LinearRegression
-from datetime import datetime
-import time
+import datetime
 
 # ==============================================================================
-# CONFIGURATION & STYLING
+# SECTION 1: SYSTEM CONFIGURATION & STYLING
 # ==============================================================================
 
 st.set_page_config(
-    page_title="Google Financial Intelligence Unit",
-    page_icon="📈",
+    page_title="GOOGL Institutional Analytics",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Custom CSS to mimic Google's Material Design aesthetics
+# Professional styling: No emojis, minimal clutter, high contrast
 st.markdown("""
 <style>
-    .main {
-        background-color: #f8f9fa;
+    /* Global Font Settings */
+    html, body, [class*="css"] {
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
     }
+    
+    /* Header Styling */
     h1, h2, h3 {
-        font-family: 'Roboto', sans-serif;
-        color: #202124;
+        color: #1a1a1a;
+        font-weight: 600;
     }
-    .metric-card {
-        background-color: #ffffff;
-        border: 1px solid #dadce0;
-        border-radius: 8px;
-        padding: 20px;
-        box-shadow: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+    
+    /* Metric Card Styling */
+    div.stMetric {
+        background-color: #f8f9fa;
+        border: 1px solid #e0e0e0;
+        padding: 15px;
+        border-radius: 5px;
     }
-    .stButton>button {
-        background-color: #1a73e8;
-        color: white;
-        border-radius: 4px;
-        border: none;
+    
+    /* Sidebar Styling */
+    section[data-testid="stSidebar"] {
+        background-color: #f1f3f4;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# MODULE 1: DATA INGESTION ENGINE
+# SECTION 2: DATA INGESTION LAYER
 # ==============================================================================
 
-class DataEngine:
+class DataIngestionLayer:
     """
-    Handles data loading, cleaning, and preprocessing.
-    Designed to be robust against missing values and type errors.
+    Responsible for loading, validating, and cleaning financial datasets.
+    Enforces strict typing to prevent downstream calculation errors.
     """
-    def __init__(self, file_path):
+    def __init__(self, file_path: str):
         self.file_path = file_path
-        self.raw_data = None
-        self.processed_data = None
+        self.data = None
 
-    def load_data(self):
-        """Loads data with caching logic."""
+    def execute_pipeline(self):
+        """Runs the full data loading pipeline."""
+        self._load_csv()
+        self._validate_schema()
+        self._enrich_data()
+        return self.data
+
+    def _load_csv(self):
         try:
-            self.raw_data = pd.read_csv(self.file_path)
-            self._preprocess()
-            return self.processed_data
-        except FileNotFoundError:
-            st.error(f"Critical Error: Data file not found at {self.file_path}. Please check repository structure.")
+            self.data = pd.read_csv(self.file_path)
+        except Exception as e:
+            st.error(f"CRITICAL ERROR: Failed to load data repository. {e}")
             st.stop()
 
-    def _preprocess(self):
-        """Clean and type-cast the data."""
-        df = self.raw_data.copy()
+    def _validate_schema(self):
+        """Ensures essential columns exist."""
+        required_cols = ['year', 'revenue', 'operating_income', 'total_assets', 'close']
+        missing = [col for col in required_cols if col not in self.data.columns]
+        if missing:
+            st.error(f"SCHEMA MISMATCH: Missing columns {missing}")
+            st.stop()
+
+    def _enrich_data(self):
+        """Adds derived financial metrics."""
+        # Convert to numeric, forcing errors to NaN then filling
+        cols = ['revenue', 'operating_income', 'total_assets', 'close', 'annual_return']
+        for c in cols:
+            self.data[c] = pd.to_numeric(self.data[c], errors='coerce')
         
-        # Ensure year is treated as datetime for time-series operations
-        df['date'] = pd.to_datetime(df['year'], format='%Y')
+        self.data.fillna(method='ffill', inplace=True)
+        self.data['date'] = pd.to_datetime(self.data['year'], format='%Y')
         
-        # Handle NA values with forward fill (financial time-series standard)
-        df.replace('NA', np.nan, inplace=True)
-        df.fillna(method='ffill', inplace=True)
-        df.fillna(0, inplace=True) # Fallback
-        
-        # Numeric conversion
-        cols_to_convert = ['revenue', 'operating_income', 'total_assets', 'annual_return']
-        for col in cols_to_convert:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-        self.processed_data = df
+        # Advanced Metrics
+        self.data['asset_turnover'] = self.data['revenue'] / self.data['total_assets']
+        self.data['operating_roa'] = self.data['operating_income'] / self.data['total_assets']
+        self.data['log_return'] = np.log(self.data['close'] / self.data['close'].shift(1))
 
 # ==============================================================================
-# MODULE 2: FINANCIAL ANALYTICS ENGINE
+# SECTION 3: QUANTITATIVE ANALYTICS ENGINE
 # ==============================================================================
 
-class FinancialEngine:
+class QuantitativeEngine:
     """
-    Performs advanced financial calculations:
-    - CAGR (Compound Annual Growth Rate)
-    - Volatility (Standard Deviation)
-    - Sharpe Ratio (Risk-Adjusted Return)
-    - Margin Analysis
+    Performs heavy statistical and financial lifting.
+    Includes Risk Modeling and Forecasting.
     """
-    def __init__(self, df):
-        self.df = df
+    def __init__(self, data: pd.DataFrame):
+        self.df = data
 
-    def calculate_cagr(self, column, periods):
-        """Calculate Compound Annual Growth Rate."""
-        start_val = self.df[column].iloc[0]
-        end_val = self.df[column].iloc[-1]
+    def calculate_cagr(self, metric: str, periods: int) -> float:
+        """Computes Compound Annual Growth Rate."""
+        start_val = self.df[metric].iloc[-periods-1] if len(self.df) > periods else self.df[metric].iloc[0]
+        end_val = self.df[metric].iloc[-1]
         return (end_val / start_val) ** (1 / periods) - 1
 
-    def calculate_kpis(self):
-        """Returns a dictionary of high-level KPIs."""
-        latest = self.df.iloc[-1]
-        prev = self.df.iloc[-2]
-        
-        return {
-            "Revenue": latest['revenue'],
-            "Revenue Growth": (latest['revenue'] - prev['revenue']) / prev['revenue'],
-            "Op Margin": latest['operating_margin'],
-            "Op Margin Change": latest['operating_margin'] - prev['operating_margin'],
-            "Stock Price": latest['close'],
-            "YTD Return": latest['annual_return']
-        }
+    def calculate_var(self, confidence_level=0.95):
+        """Calculates Value at Risk (VaR) using the Variance-Covariance method."""
+        mean = np.mean(self.df['annual_return'])
+        std_dev = np.std(self.df['annual_return'])
+        var_pct = norm.ppf(1 - confidence_level, mean, std_dev)
+        return var_pct
 
-    def monte_carlo_simulation(self, n_simulations=1000, days=252):
+    def monte_carlo_forecast(self, simulations=1000, horizon=5):
         """
-        Runs a Monte Carlo simulation to project future stock prices.
-        Based on historical mean returns and volatility (Geometric Brownian Motion).
+        Projects future revenue using Geometric Brownian Motion.
+        Used for stress-testing growth assumptions.
         """
-        returns = self.df['annual_return'].dropna()
-        mu = returns.mean()
-        sigma = returns.std()
-        start_price = self.df['close'].iloc[-1]
-        
-        simulation_df = pd.DataFrame()
-        
-        for i in range(n_simulations):
-            # Generate random daily returns
-            daily_returns = np.random.normal(mu/252, sigma/np.sqrt(252), days)
-            price_series = [start_price]
-            
-            for r in daily_returns:
-                price_series.append(price_series[-1] * (1 + r))
-            
-            simulation_df[f'Sim_{i}'] = price_series
-            
-        return simulation_df
+        last_rev = self.df['revenue'].iloc[-1]
+        rev_growth = self.df['revenue'].pct_change().dropna()
+        mu = rev_growth.mean()
+        sigma = rev_growth.std()
 
-# ==============================================================================
-# MODULE 3: PREDICTIVE MODELING (AI/ML)
-# ==============================================================================
+        paths = np.zeros((horizon, simulations))
+        paths[0] = last_rev
 
-class ForecastEngine:
-    """
-    Uses Scikit-Learn to project Revenue and Operating Income 
-    for the next 3 fiscal years.
-    """
-    def __init__(self, df):
-        self.df = df
+        for t in range(1, horizon):
+            shock = np.random.normal(mu, sigma, simulations)
+            paths[t] = paths[t-1] * (1 + shock)
         
-    def forecast_revenue(self, years_ahead=3):
-        """Linear Regression Forecast."""
+        return paths
+
+    def generate_linear_forecast(self, metric='revenue', years=3):
+        """OLS Regression for deterministic trend analysis."""
         X = self.df['year'].values.reshape(-1, 1)
-        y = self.df['revenue'].values
+        y = self.df[metric].values
         
         model = LinearRegression()
         model.fit(X, y)
         
-        future_years = np.array([self.df['year'].max() + i for i in range(1, years_ahead + 1)]).reshape(-1, 1)
-        predictions = model.predict(future_years)
+        future_years = np.array(range(self.df['year'].max() + 1, self.df['year'].max() + 1 + years)).reshape(-1, 1)
+        forecast = model.predict(future_years)
         
-        return future_years.flatten(), predictions, model.score(X, y)
+        return future_years.flatten(), forecast
 
 # ==============================================================================
-# MODULE 4: VISUALIZATION FACTORY
+# SECTION 4: VISUALIZATION LAYER
 # ==============================================================================
 
-class ChartFactory:
+class VisualLayer:
     """
-    Generates standardized, executive-ready Plotly charts.
+    Generates institutional-quality plots using Plotly.
+    Focus is on data density and clarity.
     """
+    
     @staticmethod
-    def plot_dual_axis(df, x_col, bar_col, line_col, title):
+    def create_kpi_grid(df, quant_engine):
+        """Renders top-level KPIs."""
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Revenue (TTM)", f"${latest['revenue']/1e9:,.1f}B", f"{(latest['revenue']-prev['revenue'])/prev['revenue']:.1%}")
+        c2.metric("Operating Income", f"${latest['operating_income']/1e9:,.1f}B", f"{(latest['operating_income']-prev['operating_income'])/prev['operating_income']:.1%}")
+        c3.metric("Operating Margin", f"{latest['operating_margin']:.1%}", f"{(latest['operating_margin']-prev['operating_margin']):.2%} pts")
+        c4.metric("Asset Turnover", f"{latest['asset_turnover']:.2f}x", "Efficiency Metric")
+
+    @staticmethod
+    def plot_efficiency_matrix(df):
+        """Dual-axis chart comparing Scale (Assets) vs Efficiency (ROA)."""
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        fig.add_trace(
-            go.Bar(x=df[x_col], y=df[bar_col], name=bar_col.replace('_', ' ').title(), marker_color='#4285F4', opacity=0.7),
-            secondary_y=False
-        )
+        fig.add_trace(go.Bar(x=df['year'], y=df['total_assets'], name='Total Assets', marker_color='#E8EAED'), secondary_y=False)
+        fig.add_trace(go.Scatter(x=df['year'], y=df['operating_roa'], name='Operating ROA', line=dict(color='#1A73E8', width=3)), secondary_y=True)
         
-        fig.add_trace(
-            go.Scatter(x=df[x_col], y=df[line_col], name=line_col.replace('_', ' ').title(), mode='lines+markers', line=dict(color='#EA4335', width=3)),
-            secondary_y=True
-        )
-        
-        fig.update_layout(title_text=title, template="plotly_white", height=500)
+        fig.update_layout(title="Capital Efficiency Analysis: Assets vs Return on Assets", template="simple_white", height=450)
         return fig
 
     @staticmethod
-    def plot_correlation_heatmap(df):
-        corr = df[['revenue', 'operating_income', 'total_assets', 'close', 'annual_return']].corr()
-        fig = px.imshow(corr, text_auto=True, aspect="auto", color_continuous_scale='RdBu_r', title="Metric Correlation Matrix")
-        return fig
-
-    @staticmethod
-    def plot_monte_carlo(sim_df):
+    def plot_volatility_cone(df):
+        """Visualizes stock price deviation."""
         fig = go.Figure()
-        # Plot first 50 simulations to avoid lag
-        for col in sim_df.columns[:50]:
-            fig.add_trace(go.Scatter(y=sim_df[col], mode='lines', line=dict(width=1, color='rgba(66, 133, 244, 0.2)'), showlegend=False))
+        fig.add_trace(go.Scatter(x=df['year'], y=df['close'], mode='lines+markers', name='Stock Price', line=dict(color='#202124')))
         
-        # Plot Mean Path
-        mean_path = sim_df.mean(axis=1)
-        fig.add_trace(go.Scatter(y=mean_path, mode='lines', name='Mean Projection', line=dict(color='#0F9D58', width=4)))
+        # Simple Bollinger Band approximation for visual context
+        rolling_mean = df['close'].rolling(window=3).mean()
+        rolling_std = df['close'].rolling(window=3).std()
         
-        fig.update_layout(
-            title="Monte Carlo Risk Simulation (1000 Scenarios)",
-            yaxis_title="Stock Price ($)",
-            xaxis_title="Trading Days into Future",
-            template="plotly_white"
-        )
+        fig.add_trace(go.Scatter(x=df['year'], y=rolling_mean + (2*rolling_std), mode='lines', line=dict(width=0), showlegend=False))
+        fig.add_trace(go.Scatter(x=df['year'], y=rolling_mean - (2*rolling_std), mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(26, 115, 232, 0.1)', name='Volatility Band (2σ)'))
+        
+        fig.update_layout(title="Historical Price Action & Volatility Regime", template="simple_white", height=450)
+        return fig
+
+    @staticmethod
+    def plot_monte_carlo(paths, start_year):
+        """Renders stochastic simulation paths."""
+        fig = go.Figure()
+        
+        # Plot simulation density
+        subset = paths[:, :100] # Limit to 100 lines for performance
+        years = list(range(start_year, start_year + len(paths)))
+        
+        for i in range(subset.shape[1]):
+            fig.add_trace(go.Scatter(x=years, y=subset[:, i], mode='lines', line=dict(color='rgba(189, 193, 198, 0.1)'), showlegend=False))
+            
+        # Plot Mean
+        mean_path = np.mean(paths, axis=1)
+        fig.add_trace(go.Scatter(x=years, y=mean_path, mode='lines', name='Mean Forecast', line=dict(color='#137333', width=3)))
+        
+        fig.update_layout(title="Monte Carlo Revenue Simulation (1000 Iterations)", template="simple_white", height=450)
         return fig
 
 # ==============================================================================
-# MAIN APPLICATION LOGIC
+# SECTION 5: MAIN CONTROLLER
 # ==============================================================================
 
 def main():
-    # --- Sidebar ---
-    with st.sidebar:
-        # Placeholder for Google Logo (Public URL)
-        st.image("https://upload.wikimedia.org/wikipedia/commons/2/2f/Google_2015_logo.svg", width=150)
-        st.title("Analyst Control Panel")
-        st.markdown("---")
-        
-        analysis_mode = st.radio("Select Module:", 
-            ["Executive Summary", "Financial Fundamentals", "Stock Performance", "AI Forecasting"])
-        
-        st.markdown("---")
-        st.info("System Status: Online \nData Source: Verified Master CSV")
-        st.caption(f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-    # --- Data Loading ---
-    # NOTE: Ensure 'master.csv' is in the same folder as this script
-    data_engine = DataEngine('master.csv')
-    df = data_engine.load_data()
-    fin_engine = FinancialEngine(df)
+    # 1. Header & Branding
+    st.sidebar.image("https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png", width=180)
+    st.sidebar.markdown("### Financial Intelligence Unit")
+    st.sidebar.markdown("---")
     
-    # --- Page Content ---
+    # 2. Navigation
+    view_selection = st.sidebar.radio("Analytics Module:", 
+        ["Executive Summary", "Operating Efficiency", "Risk & Volatility", "Strategic Forecasting"])
     
-    if analysis_mode == "Executive Summary":
-        st.title("📊 Executive Financial Dashboard")
-        st.markdown("### FY Performance Snapshot")
-        
-        kpis = fin_engine.calculate_kpis()
-        
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Revenue", f"${kpis['Revenue']:,.0f}", f"{kpis['Revenue Growth']*100:.1f}%")
-        col2.metric("Operating Margin", f"{kpis['Op Margin']*100:.1f}%", f"{kpis['Op Margin Change']*100:.2f} pts")
-        col3.metric("Share Price", f"${kpis['Stock Price']:.2f}", "Latest Close")
-        col4.metric("Annual Return", f"{kpis['YTD Return']*100:.1f}%", "Volatility Adj.")
-        
-        st.markdown("---")
-        st.subheader("Asset Turnover & Efficiency")
-        fig_assets = ChartFactory.plot_dual_axis(df, 'year', 'total_assets', 'revenue', 'Asset Base vs Revenue Generation')
-        st.plotly_chart(fig_assets, use_container_width=True)
+    # 3. Data Load
+    pipeline = DataIngestionLayer("master.csv")
+    df = pipeline.execute_pipeline()
+    quant = QuantitativeEngine(df)
 
-    elif analysis_mode == "Financial Fundamentals":
-        st.title("💰 Financial Statement Deep-Dive")
+    # 4. Dashboard Logic
+    if view_selection == "Executive Summary":
+        st.header("Executive Summary: Fiscal Performance")
+        st.markdown("Top-level assessment of growth, margin expansion, and capital allocation efficiency.")
+        st.markdown("---")
+        VisualLayer.create_kpi_grid(df, quant)
         
-        tab1, tab2 = st.tabs(["Income Analysis", "Efficiency Metrics"])
+        st.subheader("Revenue vs Operating Income Trajectory")
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Bar(x=df['year'], y=df['revenue'], name='Revenue', marker_color='#8AB4F8'), secondary_y=False)
+        fig.add_trace(go.Scatter(x=df['year'], y=df['operating_margin'], name='Op Margin', line=dict(color='#D93025', width=3)), secondary_y=True)
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif view_selection == "Operating Efficiency":
+        st.header("Operating Efficiency & Capital Structure")
+        st.markdown("Deep dive into Asset Turnover and Return on Assets (ROA).")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.plotly_chart(VisualLayer.plot_efficiency_matrix(df), use_container_width=True)
+            st.caption("**Insight:** Declining ROA amidst rising Assets suggests diminishing marginal returns on capital expenditure.")
+        
+        with c2:
+            st.subheader("Cost Structure Analysis")
+            # Calculate implied costs
+            df['implied_costs'] = df['revenue'] - df['operating_income']
+            fig_cost = px.area(df, x='year', y=['operating_income', 'implied_costs'], title="Revenue Decomposition: Costs vs Profit")
+            fig_cost.update_layout(template="simple_white")
+            st.plotly_chart(fig_cost, use_container_width=True)
+
+    elif view_selection == "Risk & Volatility":
+        st.header("Market Risk & Drawdown Analysis")
+        var_95 = quant.calculate_var(0.95)
+        st.warning(f"Projected Value at Risk (95% Confidence): {var_95:.2%} annual downside deviation.")
+        
+        st.plotly_chart(VisualLayer.plot_volatility_cone(df), use_container_width=True)
+        
+        st.subheader("Correlation Matrix (Macro Factors)")
+        corr = df[['revenue', 'total_assets', 'close', 'annual_return']].corr()
+        fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale='Greys', title="Factor Correlation")
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+    elif view_selection == "Strategic Forecasting":
+        st.header("Strategic Forecasting Models")
+        st.markdown("Stochastic and Deterministic modeling to bound future performance scenarios.")
+        
+        tab1, tab2 = st.tabs(["Monte Carlo (Stochastic)", "Linear Regression (Deterministic)"])
         
         with tab1:
-            st.subheader("Top Line vs Bottom Line")
-            fig_inc = go.Figure()
-            fig_inc.add_trace(go.Bar(x=df['year'], y=df['revenue'], name='Revenue', marker_color='#1a73e8'))
-            fig_inc.add_trace(go.Bar(x=df['year'], y=df['operating_income'], name='Op Income', marker_color='#34a853'))
-            st.plotly_chart(fig_inc, use_container_width=True)
+            st.markdown("**Methodology:** Geometric Brownian Motion simulated over 1,000 iterations based on historical volatility.")
+            paths = quant.monte_carlo_forecast()
+            st.plotly_chart(VisualLayer.plot_monte_carlo(paths, df['year'].max()), use_container_width=True)
             
         with tab2:
-            st.subheader("Correlation Analysis")
-            st.write("Identifying drivers of stock price through statistical correlation.")
-            fig_corr = ChartFactory.plot_correlation_heatmap(df)
-            st.plotly_chart(fig_corr, use_container_width=True)
-
-    elif analysis_mode == "Stock Performance":
-        st.title("📈 Market Performance & Risk")
-        
-        # Candlestick Chart
-        st.subheader("Price Action (OHLC)")
-        fig_candle = go.Figure(data=[go.Candlestick(x=df['date'],
-                        open=df['open'], high=df['high'],
-                        low=df['low'], close=df['close'])])
-        fig_candle.update_layout(xaxis_rangeslider_visible=False, template="plotly_white")
-        st.plotly_chart(fig_candle, use_container_width=True)
-        
-        # Volatility Analysis
-        st.subheader("Risk Analysis: Return Distribution")
-        fig_hist = px.histogram(df, x="annual_return", nbins=10, title="Distribution of Annual Returns", marginal="box")
-        st.plotly_chart(fig_hist, use_container_width=True)
-
-    elif analysis_mode == "AI Forecasting":
-        st.title("🤖 Predictive Modeling & Simulations")
-        st.markdown("Leveraging **Monte Carlo** simulations and **Linear Regression** to project future scenarios.")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Revenue Forecast (Linear Model)")
-            forecaster = ForecastEngine(df)
-            years, preds, r2 = forecaster.forecast_revenue()
+            st.markdown("**Methodology:** Ordinary Least Squares (OLS) regression on historical top-line revenue.")
+            years, pred = quant.generate_linear_forecast()
             
-            fig_forecast = go.Figure()
-            fig_forecast.add_trace(go.Scatter(x=df['year'], y=df['revenue'], mode='lines+markers', name='Historical'))
-            fig_forecast.add_trace(go.Scatter(x=years, y=preds, mode='lines+markers', name='Forecast', line=dict(dash='dash', color='orange')))
-            st.plotly_chart(fig_forecast, use_container_width=True)
-            st.info(f"Model Confidence (R²): {r2:.4f}")
-
-        with col2:
-            st.subheader("Monte Carlo Price Simulation")
-            sim_df = fin_engine.monte_carlo_simulation()
-            fig_mc = ChartFactory.plot_monte_carlo(sim_df)
-            st.plotly_chart(fig_mc, use_container_width=True)
+            fig_reg = go.Figure()
+            fig_reg.add_trace(go.Scatter(x=df['year'], y=df['revenue'], name='Historical', mode='lines+markers'))
+            fig_reg.add_trace(go.Scatter(x=years, y=pred, name='OLS Forecast', line=dict(dash='dash', color='black')))
+            st.plotly_chart(fig_reg, use_container_width=True)
 
 if __name__ == "__main__":
     main()
