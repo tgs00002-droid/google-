@@ -1,355 +1,480 @@
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
+import math
 import numpy as np
-import os
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.linear_model import LinearRegression
 
-# ==========================================
-# 1. APP CONFIGURATION & STYLING
-# ==========================================
+# -----------------------------
+# Page setup
+# -----------------------------
 st.set_page_config(
-    page_title="Strategic Financial Intelligence",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    page_icon="📈"
+    page_title="Master Finance Analytics (Portfolio App)",
+    page_icon="📈",
+    layout="wide"
 )
 
-# Custom CSS for a clean, professional "Google-Style" aesthetic
-st.markdown("""
-    <style>
-    /* Main container styling */
-    .main { background-color: #ffffff; }
-    
-    /* Card styling for metrics and insights */
-    .metric-card {
-        background-color: #f8f9fa;
-        padding: 20px;
-        border-radius: 8px;
-        border-left: 5px solid #4285F4; /* Google Blue */
-        box-shadow: 0px 2px 4px rgba(0,0,0,0.05);
-        margin-bottom: 20px;
-        font-family: 'Roboto', sans-serif;
+# -----------------------------
+# Helpers
+# -----------------------------
+@st.cache_data
+def load_data(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    # Basic cleaning / typing
+    if "year" in df.columns:
+        df["year"] = pd.to_numeric(df["year"], errors="coerce").astype("Int64")
+    return df
+
+def fmt_money(x: float) -> str:
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "—"
+    x = float(x)
+    sign = "-" if x < 0 else ""
+    x = abs(x)
+    if x >= 1e12: return f"{sign}${x/1e12:.2f}T"
+    if x >= 1e9:  return f"{sign}${x/1e9:.2f}B"
+    if x >= 1e6:  return f"{sign}${x/1e6:.2f}M"
+    return f"{sign}${x:,.0f}"
+
+def fmt_pct(x: float, digits=1) -> str:
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "—"
+    return f"{100*float(x):.{digits}f}%"
+
+def safe_corr(a: pd.Series, b: pd.Series) -> float:
+    tmp = pd.concat([a, b], axis=1).dropna()
+    if len(tmp) < 3:
+        return np.nan
+    return float(tmp.corr().iloc[0, 1])
+
+def cagr(first: float, last: float, years: int) -> float:
+    if years <= 0 or first is None or last is None:
+        return np.nan
+    if first <= 0 or last <= 0:
+        return np.nan
+    return (last / first) ** (1 / years) - 1
+
+def trend_forecast(y: pd.Series, x_years: pd.Series, horizon: int = 5, log_scale: bool = True, n_boot: int = 300):
+    """
+    Simple, explainable forecast:
+    - Fits linear regression on year vs log(y) (default) to model long-term growth
+    - Produces uncertainty via bootstrap of residuals (honest + transparent)
+    """
+    df_fit = pd.DataFrame({"year": x_years, "y": y}).dropna()
+    if len(df_fit) < 5:
+        return None
+
+    X = df_fit["year"].values.reshape(-1, 1)
+    yv = df_fit["y"].values.astype(float)
+
+    if log_scale:
+        if np.any(yv <= 0):
+            log_scale = False
+        else:
+            y_model = np.log(yv)
+    else:
+        y_model = yv
+
+    model = LinearRegression()
+    model.fit(X, y_model)
+    y_hat = model.predict(X)
+    resid = y_model - y_hat
+
+    last_year = int(df_fit["year"].max())
+    future_years = np.arange(last_year + 1, last_year + horizon + 1)
+    Xf = future_years.reshape(-1, 1)
+    pred = model.predict(Xf)
+
+    # Bootstrap intervals
+    rng = np.random.default_rng(42)
+    sims = []
+    if len(resid) >= 5:
+        for _ in range(n_boot):
+            sampled = rng.choice(resid, size=len(future_years), replace=True)
+            sims.append(pred + sampled)
+        sims = np.vstack(sims)
+        lo = np.percentile(sims, 10, axis=0)
+        hi = np.percentile(sims, 90, axis=0)
+    else:
+        lo, hi = pred, pred
+
+    if log_scale:
+        pred_y = np.exp(pred)
+        lo_y = np.exp(lo)
+        hi_y = np.exp(hi)
+    else:
+        pred_y = pred
+        lo_y = lo
+        hi_y = hi
+
+    out = pd.DataFrame({
+        "year": future_years,
+        "forecast": pred_y,
+        "lo": lo_y,
+        "hi": hi_y
+    })
+    return out
+
+def build_story(df: pd.DataFrame) -> dict:
+    """
+    Turns metrics into a hiring-manager-friendly narrative.
+    """
+    df = df.sort_values("year").copy()
+
+    latest = df.iloc[-1]
+    first = df.iloc[0]
+    years_span = int(latest["year"] - first["year"])
+
+    # Core KPIs
+    rev_cagr = cagr(first.get("revenue", np.nan), latest.get("revenue", np.nan), years_span)
+    last_rev_yoy = latest.get("revenue_yoy", np.nan)
+    last_margin = latest.get("operating_margin", np.nan)
+
+    ann_ret = df["annual_return"].dropna()
+    vol = float(ann_ret.std()) if len(ann_ret) >= 3 else np.nan
+
+    corr_rev_stock = safe_corr(df.get("revenue", pd.Series(dtype=float)), df.get("close", pd.Series(dtype=float)))
+
+    # Identify recent direction
+    recent = df.tail(4)
+    rev_trend = "up" if recent["revenue"].dropna().diff().mean() > 0 else "down"
+    margin_trend = "up" if recent["operating_margin"].dropna().diff().mean() > 0 else "down"
+
+    # Market vs fundamentals
+    if not np.isnan(corr_rev_stock):
+        if corr_rev_stock >= 0.6:
+            linkage = "The stock and revenue have moved together strongly, which usually means fundamentals are a major driver of market perception."
+        elif corr_rev_stock <= 0.0:
+            linkage = "Revenue and the stock have not moved together reliably, which suggests valuation, sentiment, or macro conditions may be dominating the market story."
+        else:
+            linkage = "Revenue and the stock show a moderate relationship—fundamentals matter, but market expectations and macro factors also play a big role."
+    else:
+        linkage = "There isn’t enough data to reliably quantify the revenue-to-stock relationship, so the app focuses more on directional trends."
+
+    # Narrative (plain English)
+    story = {
+        "headline": "Fundamentals + Market: what changed, and what it likely means",
+        "bullets": [
+            f"Revenue trend is **{rev_trend}** recently, and long-run growth is about **{fmt_pct(rev_cagr, 1)} CAGR** over the period shown." if not np.isnan(rev_cagr)
+            else "Revenue growth is visible, but CAGR can’t be computed reliably with the current values.",
+            f"Latest revenue growth is **{fmt_pct(last_rev_yoy, 1)} YoY**." if not np.isnan(last_rev_yoy)
+            else "Latest revenue YoY is unavailable in the dataset.",
+            f"Operating margin is **{fmt_pct(last_margin, 1)}**, trending **{margin_trend}** recently (profitability quality signal)." if not np.isnan(last_margin)
+            else "Operating margin is unavailable in the dataset.",
+            f"Return volatility is **{fmt_pct(vol, 1)}** (annualized, based on annual returns)." if not np.isnan(vol)
+            else "Not enough return history to compute volatility.",
+            linkage
+        ],
+        "corr_rev_stock": corr_rev_stock,
+        "rev_cagr": rev_cagr,
+        "vol": vol
     }
-    
-    /* Typography */
-    h1, h2, h3 { color: #202124; font-family: 'Google Sans', sans-serif; }
-    .highlight { color: #4285F4; font-weight: bold; }
-    .metric-label { font-size: 14px; color: #5f6368; }
-    .metric-value { font-size: 28px; font-weight: 700; color: #202124; }
-    </style>
-    """, unsafe_allow_html=True)
+    return story
 
-# ==========================================
-# 2. DATA ARCHITECTURE (The Logic Layer)
-# ==========================================
-class FinancialEngine:
+def explain_forecast(metric_name: str, history: pd.Series, forecast_df: pd.DataFrame, scenario_label: str) -> str:
     """
-    Acts as the 'Single Source of Truth'. 
-    Handles data loading, cleaning, and advanced metric calculation.
+    A human-readable explanation for forecasts that doesn't sound like boilerplate.
     """
-    def __init__(self, file_path):
-        self.file_path = file_path
-        self.raw_data = None
-        self.df = None
-        self._load_data()
+    last = history.dropna().iloc[-1] if history.dropna().shape[0] else np.nan
+    recent = history.dropna().tail(4)
+    recent_slope = recent.diff().mean() if len(recent) >= 3 else np.nan
 
-    def _load_data(self):
-        if not os.path.exists(self.file_path):
-            st.error(f"⚠️ Error: '{self.file_path}' not found. Please ensure the CSV is in the same folder.")
-            st.stop()
-        self.raw_data = pd.read_csv(self.file_path)
-        self._process_data()
+    base = forecast_df["forecast"].iloc[-1]
+    lo = forecast_df["lo"].iloc[-1]
+    hi = forecast_df["hi"].iloc[-1]
 
-    def _process_data(self):
-        """Feature Engineering for advanced insights."""
-        df = self.raw_data.copy()
-        df = df.sort_values('year')
-        
-        # --- Metric 1: The Rule of 40 (Growth + Margin) ---
-        # Logic: (Revenue Growth % * 100) + (Operating Margin % * 100)
-        # We assume input data is decimal (e.g., 0.25). We convert to integer score (e.g., 25).
-        df['rule_of_40'] = (df['revenue_yoy'] * 100) + (df['operating_margin'] * 100)
-        
-        # --- Metric 2: Operating Leverage ---
-        # Logic: Are profits growing faster than revenue?
-        df['op_income_yoy'] = df['operating_income'].pct_change()
-        df['operating_leverage'] = df['op_income_yoy'] / df['revenue_yoy']
-        
-        # --- Formatting: Billions for readability ---
-        df['revenue_B'] = df['revenue'] / 1e9
-        
-        self.df = df
+    direction = "increase" if (not np.isnan(recent_slope) and recent_slope > 0) else "soften"
+    uncertainty = "tight" if (hi - lo) / max(1e-9, abs(base)) < 0.25 else "wide"
 
-    def get_kpis(self):
-        """Returns the most recent year's key performance indicators."""
-        latest = self.df.iloc[-1]
-        prev = self.df.iloc[-2]
-        
-        return {
-            'year': int(latest['year']),
-            'revenue': latest['revenue_B'],
-            'growth': latest['revenue_yoy'],
-            'margin': latest['operating_margin'],
-            'rule_40': latest['rule_of_40'],
-            'beta': 1.05 # Placeholder: In a real app, calculate relative to SP500
-        }
+    # Metric-specific language
+    if metric_name in ["revenue", "operating_income", "total_assets"]:
+        metric_phrase = "business fundamentals"
+    elif metric_name in ["close", "avg_price", "open", "high", "low"]:
+        metric_phrase = "market pricing"
+    else:
+        metric_phrase = "the metric"
 
-    def generate_forecast(self, base_growth, bull_adj, bear_adj, years=3):
-        """
-        Creates a DataFrame containing 3 scenario paths (Base, Bull, Bear).
-        Uses Driver-Based Modeling.
-        """
-        last_year = self.df['year'].max()
-        last_rev = self.df['revenue'].iloc[-1]
-        
-        scenarios = []
-        for i in range(1, years + 1):
-            curr_year = last_year + i
-            
-            # Scenario Calculations
-            # 1. Base Case: User defined input
-            base_rev = last_rev * ((1 + base_growth) ** i)
-            scenarios.append({'Year': curr_year, 'Revenue': base_rev/1e9, 'Scenario': 'Base Case'})
-            
-            # 2. Bull Case: Optimistic Macro (+ adjustment)
-            bull_rev = last_rev * ((1 + base_growth + bull_adj) ** i)
-            scenarios.append({'Year': curr_year, 'Revenue': bull_rev/1e9, 'Scenario': 'Bull Case'})
-            
-            # 3. Bear Case: Pessimistic Macro (- adjustment)
-            bear_rev = last_rev * ((1 + base_growth - bear_adj) ** i)
-            scenarios.append({'Year': curr_year, 'Revenue': bear_rev/1e9, 'Scenario': 'Bear Case'})
-            
-        return pd.DataFrame(scenarios)
+    def pretty(v):
+        if metric_name in ["revenue", "operating_income", "total_assets"]:
+            return fmt_money(v)
+        if metric_name in ["annual_return", "operating_margin", "revenue_yoy", "stock_yoy"]:
+            return fmt_pct(v, 1)
+        return f"{v:,.2f}"
 
-# ==========================================
-# 3. VISUALIZATION ENGINE (The Presentation Layer)
-# ==========================================
-class ChartBuilder:
-    """
-    Dedicated class for professional Plotly charts.
-    Ensures consistent brand colors (Google Blue/Green/Red).
-    """
-    COLOR_BLUE = '#4285F4'
-    COLOR_GREEN = '#34A853'
-    COLOR_RED = '#EA4335'
-    COLOR_GRAY = '#B0B0B0'
-
-    @staticmethod
-    def plot_divergence(df):
-        """Compares Fundamental Growth vs. Market Valuation."""
-        fig = go.Figure()
-        
-        # Fundamentals (Revenue)
-        fig.add_trace(go.Scatter(
-            x=df['year'], y=df['revenue_index'],
-            name='Revenue Index (Fundamentals)',
-            mode='lines+markers',
-            line=dict(color=ChartBuilder.COLOR_BLUE, width=3)
-        ))
-        
-        # Sentiment (Stock Price)
-        fig.add_trace(go.Scatter(
-            x=df['year'], y=df['stock_index'],
-            name='Stock Price Index (Market)',
-            mode='lines+markers',
-            line=dict(color=ChartBuilder.COLOR_GREEN, width=3, dash='dot')
-        ))
-        
-        fig.update_layout(
-            title="<b>Valuation Reality Check:</b> Fundamentals vs. Sentiment",
-            xaxis_title="Fiscal Year",
-            yaxis_title="Index (Base=100)",
-            template="plotly_white",
-            height=400,
-            hovermode="x unified",
-            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
-        )
-        return fig
-
-    @staticmethod
-    def plot_rule_of_40(df):
-        """Scatter plot for Growth vs. Profitability."""
-        # Filter for clean data
-        clean_df = df.dropna(subset=['revenue_yoy', 'operating_margin'])
-        
-        fig = px.scatter(
-            clean_df, x='revenue_yoy', y='operating_margin',
-            size='revenue_B', color='year',
-            title="<b>Efficiency Frontier:</b> The Rule of 40",
-            labels={'revenue_yoy': 'Revenue Growth (%)', 'operating_margin': 'Operating Margin (%)'},
-            template="plotly_white",
-            color_continuous_scale=px.colors.sequential.Blues,
-            height=400
-        )
-        
-        # Add Reference Line (The "40%" threshold)
-        # Equation: y = 0.40 - x
-        x_line = np.linspace(clean_df['revenue_yoy'].min(), clean_df['revenue_yoy'].max(), 100)
-        y_line = 0.40 - x_line
-        
-        fig.add_trace(go.Scatter(
-            x=x_line, y=y_line, mode='lines', name='Rule of 40 Target',
-            line=dict(color=ChartBuilder.COLOR_GRAY, dash='dash')
-        ))
-        
-        return fig
-
-    @staticmethod
-    def plot_forecast(hist_df, forecast_df):
-        """Connects historical actuals with future scenarios."""
-        fig = go.Figure()
-        
-        # Historicals
-        fig.add_trace(go.Scatter(
-            x=hist_df['year'], y=hist_df['revenue_B'],
-            name='Actuals',
-            line=dict(color='#202124', width=4)
-        ))
-        
-        # Scenarios
-        colors = {'Base Case': ChartBuilder.COLOR_BLUE, 
-                  'Bull Case': ChartBuilder.COLOR_GREEN, 
-                  'Bear Case': ChartBuilder.COLOR_RED}
-        
-        for scenario in forecast_df['Scenario'].unique():
-            subset = forecast_df[forecast_df['Scenario'] == scenario]
-            fig.add_trace(go.Scatter(
-                x=subset['Year'], y=subset['Revenue'],
-                name=scenario,
-                line=dict(color=colors[scenario], width=2, dash='dash')
-            ))
-            
-        fig.update_layout(
-            title="<b>Forward Guidance:</b> 3-Year Revenue Scenarios",
-            yaxis_title="Revenue ($ Billions)",
-            xaxis_title="Year",
-            template="plotly_white",
-            height=450,
-            hovermode="x unified"
-        )
-        return fig
-
-# ==========================================
-# 4. MAIN APPLICATION
-# ==========================================
-def main():
-    # --- Sidebar Controls ---
-    st.sidebar.header("🎛️ Analyst Controls")
-    st.sidebar.write("Adjust assumptions to update the forecast model.")
-    
-    # 1. Growth Driver
-    base_growth = st.sidebar.slider(
-        "Base Revenue Growth (%)", 
-        min_value=0.0, max_value=0.30, value=0.12, step=0.01, format="%.2f"
+    msg = (
+        f"**{scenario_label} scenario:** Based on the historical trend, the model expects {metric_phrase} "
+        f"to **{direction}** over the next few years. The end-of-horizon estimate is **{pretty(base)}**, "
+        f"with a {uncertainty} range (**{pretty(lo)}** to **{pretty(hi)}**). "
+        f"This range widens when recent history is choppier or when the metric has larger year-to-year swings."
     )
-    
-    # 2. Macro Driver
-    macro_outlook = st.sidebar.selectbox(
-        "Macro Economic Outlook", 
-        ["Neutral", "Recessionary (-500bps)", "Expansionary (+500bps)"]
-    )
-    
-    # Logic to adjust model based on macro selection
-    bull_adj = 0.05
-    bear_adj = 0.05
-    if macro_outlook == "Recessionary (-500bps)":
-        base_growth = max(0.0, base_growth - 0.05)
-        st.sidebar.warning("📉 Adjusting Base Case down for recessionary environment.")
-    elif macro_outlook == "Expansionary (+500bps)":
-        base_growth += 0.05
-        st.sidebar.success("📈 Adjusting Base Case up for expansionary environment.")
 
-    # --- Load Data ---
-    engine = FinancialEngine('master.csv')
-    kpis = engine.get_kpis()
+    # Add one more sentence that feels like an analyst
+    if not np.isnan(last) and not np.isnan(base):
+        change = (base - last) / (abs(last) + 1e-9)
+        msg += f" Relative to the most recent actual value (**{pretty(last)}**), that implies about **{fmt_pct(change, 1)}** movement by the forecast horizon."
 
-    # --- Dashboard Header ---
-    st.title("📊 Strategic Financial Command Center")
-    st.markdown("Real-time view of firm fundamentals, market valuation, and strategic scenarios.")
-    st.markdown("---")
+    return msg
 
-    # --- Top Level Metrics ---
+# -----------------------------
+# Load data
+# -----------------------------
+df = load_data("master.csv")
+
+# Validate expected columns lightly (don’t hard fail)
+required_hint = ["year", "revenue", "operating_income", "total_assets", "close"]
+missing = [c for c in required_hint if c not in df.columns]
+if missing:
+    st.warning(f"Your dataset is missing some typical fields used in this app: {missing}. The app will still run with what’s available.")
+
+df = df.sort_values("year")
+story = build_story(df)
+
+# -----------------------------
+# Sidebar navigation
+# -----------------------------
+st.sidebar.title("📌 Master Finance App")
+page = st.sidebar.radio(
+    "Navigate",
+    ["Executive Summary", "Fundamentals", "Market Performance", "Forecasts & Scenarios", "Data Dictionary"],
+    index=0
+)
+
+st.sidebar.caption("Built to showcase: financial analytics, product thinking, and explainable insights.")
+
+# -----------------------------
+# Executive Summary
+# -----------------------------
+if page == "Executive Summary":
+    st.title("📈 Master Finance Analytics — Executive Summary")
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("FY Revenue", f"${kpis['revenue']:.1f}B", f"{kpis['growth']:.1%}")
-    c2.metric("Op Margin", f"{kpis['margin']:.1%}", "Stable")
-    c3.metric("Rule of 40 Score", f"{kpis['rule_40']:.0f}", "Target > 40")
-    c4.metric("Implied Beta", f"{kpis['beta']}", "Neutral")
+    # KPI cards
+    rev_cagr = story["rev_cagr"]
+    vol = story["vol"]
+    last = df.iloc[-1]
 
-    st.markdown("---")
+    c1.metric("Revenue (latest)", fmt_money(last.get("revenue", np.nan)))
+    c2.metric("Revenue CAGR", fmt_pct(rev_cagr, 1) if not np.isnan(rev_cagr) else "—")
+    c3.metric("Operating Margin (latest)", fmt_pct(last.get("operating_margin", np.nan), 1))
+    c4.metric("Return Volatility", fmt_pct(vol, 1) if not np.isnan(vol) else "—")
 
-    # --- Section 1: Valuation Analysis ---
-    st.subheader("1. Valuation Reality Check")
-    col_viz1, col_txt1 = st.columns([2, 1])
-    
-    with col_viz1:
-        fig1 = ChartBuilder.plot_divergence(engine.df)
-        st.plotly_chart(fig1, use_container_width=True)
-    
-    with col_txt1:
-        st.markdown("""
-        <div class="metric-card">
-        <b>💡 Analyst Note:</b><br><br>
-        We observe a distinct divergence between 
-        <span class="highlight">Fundamental Growth</span> and 
-        <span class="highlight">Market Price</span>.<br><br>
-        While revenue has compounded steadily, stock price volatility 
-        suggests valuation is being driven by external multiple expansion 
-        rather than internal performance surprises.
-        </div>
-        """, unsafe_allow_html=True)
+    st.subheader(story["headline"])
+    for b in story["bullets"]:
+        st.write("• " + b)
 
-    # --- Section 2: Efficiency Analysis ---
-    st.subheader("2. The Efficiency Frontier (Rule of 40)")
-    col_txt2, col_viz2 = st.columns([1, 2])
-    
-    with col_txt2:
-        st.markdown("""
-        <div class="metric-card">
-        <b>Strategy Insight:</b><br><br>
-        The "Rule of 40" states that Growth Rate + Profit Margin should exceed 40.<br><br>
-        <b>Current Status:</b> The company is transitioning from a 
-        "Growth at all costs" phase (Top Right) to a mature "Cash Cow" 
-        phase (Lower Right).
-        </div>
-        """, unsafe_allow_html=True)
-        
-    with col_viz2:
-        fig2 = ChartBuilder.plot_rule_of_40(engine.df)
+    st.divider()
+
+    # Indexed comparison
+    cols = []
+    if "revenue_index" in df.columns:
+        cols.append("revenue_index")
+    if "stock_index" in df.columns:
+        cols.append("stock_index")
+
+    if cols:
+        plot_df = df[["year"] + cols].copy()
+        plot_long = plot_df.melt(id_vars="year", var_name="index_type", value_name="value")
+        fig = px.line(plot_long, x="year", y="value", color="index_type", markers=True,
+                      title="Indexed Growth: Fundamentals vs Market (Base = 100)")
+        fig.update_layout(legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Add `revenue_index` and/or `stock_index` columns to show indexed comparisons (base=100).")
+
+# -----------------------------
+# Fundamentals
+# -----------------------------
+elif page == "Fundamentals":
+    st.title("🏦 Fundamentals")
+
+    metric = st.selectbox(
+        "Choose a fundamentals metric",
+        [m for m in ["revenue", "operating_income", "total_assets", "operating_margin", "revenue_yoy"] if m in df.columns],
+        index=0
+    )
+
+    left, right = st.columns([2, 1])
+
+    with left:
+        fig = px.line(df, x="year", y=metric, markers=True, title=f"{metric.replace('_',' ').title()} Over Time")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with right:
+        st.subheader("Interpretation")
+        latest_val = df[metric].dropna().iloc[-1] if df[metric].dropna().shape[0] else np.nan
+        prev_val = df[metric].dropna().iloc[-2] if df[metric].dropna().shape[0] >= 2 else np.nan
+
+        if metric in ["revenue", "operating_income", "total_assets"]:
+            st.write(f"Latest: **{fmt_money(latest_val)}**")
+            if not np.isnan(prev_val):
+                delta = (latest_val - prev_val) / (abs(prev_val) + 1e-9)
+                st.write(f"Change vs prior year: **{fmt_pct(delta, 1)}**")
+            st.write("Why it matters: this is a core scale/health signal that should map to strategy, capacity, and investment decisions.")
+        elif metric in ["operating_margin"]:
+            st.write(f"Latest: **{fmt_pct(latest_val, 1)}**")
+            st.write("Why it matters: margin is the ‘quality’ of growth—strong revenue growth with collapsing margins is a very different story than efficient growth.")
+        elif metric in ["revenue_yoy"]:
+            st.write(f"Latest: **{fmt_pct(latest_val, 1)}**")
+            st.write("Why it matters: YoY highlights acceleration or deceleration—useful for planning and expectation-setting.")
+
+    st.divider()
+
+    if "revenue" in df.columns and "operating_margin" in df.columns:
+        tmp = df[["year", "revenue", "operating_margin"]].copy()
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(x=tmp["year"], y=tmp["revenue"], name="Revenue"))
+        fig2.add_trace(go.Scatter(x=tmp["year"], y=tmp["operating_margin"], name="Operating Margin", yaxis="y2", mode="lines+markers"))
+        fig2.update_layout(
+            title="Revenue (Scale) + Operating Margin (Quality)",
+            yaxis=dict(title="Revenue"),
+            yaxis2=dict(title="Operating Margin", overlaying="y", side="right", tickformat=".0%"),
+            legend_title_text=""
+        )
         st.plotly_chart(fig2, use_container_width=True)
 
-    # --- Section 3: Scenario Planning ---
-    st.subheader("3. Strategic Forecast Model")
-    
-    # Run Forecast Logic
-    forecast_df = engine.generate_forecast(base_growth, bull_adj, bear_adj)
-    
-    col_viz3, col_txt3 = st.columns([2, 1])
-    
-    with col_viz3:
-        fig3 = ChartBuilder.plot_forecast(engine.df, forecast_df)
-        st.plotly_chart(fig3, use_container_width=True)
-        
-    with col_txt3:
-        st.markdown(f"""
-        <div class="metric-card">
-        <b>Model Assumptions:</b><br>
-        <ul>
-        <li><b>Base Case ({base_growth:.1%}):</b> Consensus estimates.</li>
-        <li><b>Bull Case:</b> AI monetization success + macro tailwinds.</li>
-        <li><b>Bear Case:</b> Regulatory pressure + margin compression.</li>
-        </ul>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Download Button (Product Feature)
-        csv = forecast_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "📥 Download Scenario Data",
-            data=csv,
-            file_name="forecast_scenarios.csv",
-            mime="text/csv"
-        )
+# -----------------------------
+# Market Performance
+# -----------------------------
+elif page == "Market Performance":
+    st.title("💹 Market Performance")
 
-if __name__ == "__main__":
-    main()
+    price_cols = [c for c in ["open", "high", "low", "close", "avg_price"] if c in df.columns]
+    if price_cols:
+        metric = st.selectbox("Choose a market metric", price_cols, index=price_cols.index("close") if "close" in price_cols else 0)
+
+        fig = px.line(df, x="year", y=metric, markers=True, title=f"{metric.title()} Over Time")
+        st.plotly_chart(fig, use_container_width=True)
+
+    if "annual_return" in df.columns:
+        fig2 = px.bar(df, x="year", y="annual_return", title="Annual Return (YoY)", labels={"annual_return": "Return"})
+        fig2.update_yaxes(tickformat=".0%")
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # Fundamentals vs market relationship
+    st.subheader("Fundamentals vs Market: linkage check")
+    if "revenue" in df.columns and "close" in df.columns:
+        tmp = df[["year", "revenue", "close"]].dropna()
+        if len(tmp) >= 5:
+            fig3 = px.scatter(tmp, x="revenue", y="close", trendline="ols",
+                              title="Revenue vs Stock Close (Relationship, not causation)")
+            fig3.update_layout(xaxis_title="Revenue", yaxis_title="Close")
+            st.plotly_chart(fig3, use_container_width=True)
+
+            corr = safe_corr(df["revenue"], df["close"])
+            st.write(f"Correlation (Revenue, Close): **{corr:.2f}**" if not np.isnan(corr) else "Correlation: —")
+            st.caption("This is a quick diagnostic. A hiring manager wants to see that you can separate correlation from causation and discuss what else might be driving price (rates, multiples, expectations).")
+        else:
+            st.info("Not enough rows with both revenue and close to estimate a relationship reliably.")
+
+# -----------------------------
+# Forecasts & Scenarios
+# -----------------------------
+elif page == "Forecasts & Scenarios":
+    st.title("🔮 Forecasts & Scenarios (Explainable)")
+
+    forecastable = [c for c in ["revenue", "operating_income", "total_assets", "close"] if c in df.columns]
+    if not forecastable:
+        st.info("Add at least one of these columns to enable forecasting: revenue, operating_income, total_assets, close.")
+    else:
+        metric = st.selectbox("Metric to forecast", forecastable, index=0)
+        horizon = st.slider("Forecast horizon (years)", 1, 10, 5)
+
+        # Scenario control: adjust growth after baseline forecast
+        scenario = st.selectbox("Scenario", ["Baseline", "Optimistic", "Conservative"], index=0)
+        adj = 0.00
+        if scenario == "Optimistic":
+            adj = st.slider("Optimistic uplift (annual growth add-on)", 0.00, 0.20, 0.05, 0.01)
+        elif scenario == "Conservative":
+            adj = -st.slider("Conservative drag (annual growth reduction)", 0.00, 0.20, 0.05, 0.01)
+
+        hist = df.set_index("year")[metric].astype(float)
+        fc = trend_forecast(hist, hist.index.to_series(), horizon=horizon, log_scale=True)
+
+        if fc is None:
+            st.warning("Not enough data points to forecast this metric (need ~5+).")
+        else:
+            # Apply scenario adjustment as compounded growth on forecast path
+            if adj != 0:
+                base0 = float(fc["forecast"].iloc[0])
+                years_ahead = np.arange(1, len(fc) + 1)
+                growth_factor = (1 + adj) ** years_ahead
+                fc["forecast"] = fc["forecast"] * growth_factor
+                fc["lo"] = fc["lo"] * growth_factor
+                fc["hi"] = fc["hi"] * growth_factor
+
+            # Plot
+            plot_hist = df[["year", metric]].copy()
+            plot_fc = fc.copy()
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=plot_hist["year"], y=plot_hist[metric], mode="lines+markers", name="Actual"))
+
+            fig.add_trace(go.Scatter(x=plot_fc["year"], y=plot_fc["forecast"], mode="lines+markers", name="Forecast"))
+            fig.add_trace(go.Scatter(
+                x=np.concatenate([plot_fc["year"], plot_fc["year"][::-1]]),
+                y=np.concatenate([plot_fc["hi"], plot_fc["lo"][::-1]]),
+                fill="toself",
+                name="Uncertainty band (10–90%)",
+                line=dict(width=0),
+                showlegend=True
+            ))
+
+            fig.update_layout(title=f"{metric.replace('_',' ').title()} — Forecast ({scenario})",
+                              xaxis_title="Year",
+                              yaxis_title=metric.replace("_", " ").title())
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("Forecast explanation")
+            st.write(explain_forecast(metric, hist, fc, scenario))
+
+            st.divider()
+            st.subheader("Scenario table (copy into a write-up)")
+            show = fc.copy()
+            show["forecast"] = show["forecast"].astype(float)
+            show["lo"] = show["lo"].astype(float)
+            show["hi"] = show["hi"].astype(float)
+
+            # Pretty formatting
+            if metric in ["revenue", "operating_income", "total_assets"]:
+                show_fmt = show.copy()
+                for c in ["forecast", "lo", "hi"]:
+                    show_fmt[c] = show_fmt[c].apply(fmt_money)
+            else:
+                show_fmt = show.round(2)
+
+            st.dataframe(show_fmt, use_container_width=True)
+
+# -----------------------------
+# Data Dictionary
+# -----------------------------
+elif page == "Data Dictionary":
+    st.title("📚 Data Dictionary (Make the app self-explanatory)")
+
+    dd = []
+    defs = {
+        "revenue": "Total revenue for the period. Scale signal used for planning and growth evaluation.",
+        "operating_income": "Operating profit. Helps separate real business performance from financing/taxes.",
+        "total_assets": "Balance sheet scale. Useful for context on investment base and capacity.",
+        "close": "End-of-period price. Market expectations + fundamentals + macro all show up here.",
+        "annual_return": "Year-over-year return based on close (or provided). Used to quantify performance/volatility.",
+        "operating_margin": "Operating income / revenue. Quality and efficiency of growth.",
+        "revenue_yoy": "Revenue growth rate vs prior year.",
+        "stock_yoy": "Stock YoY change vs prior year.",
+        "revenue_index": "Revenue normalized to 100 at start (comparability).",
+        "stock_index": "Stock normalized to 100 at start (comparability).",
+        "avg_price": "Average price over period (if computed)."
+    }
+
+    for col in df.columns:
+        dd.append({
+            "field": col,
+            "definition": defs.get(col, "Add a definition here (recommended for portfolio quality)."),
+            "example_use": "Chart, KPI, or forecast input"
+        })
+
+    st.dataframe(pd.DataFrame(dd), use_container_width=True)
+
+    st.caption(
+        "Hiring-manager signal: a clean dictionary shows you think about stakeholder clarity, metric governance, and scale."
+    )
