@@ -152,7 +152,6 @@ class ChartBuilder:
         )
         
         # Add the 'Rule of 40' threshold line (x + y = 0.40)
-        # We simulate this by adding a line shape
         x_range = np.linspace(clean_df['revenue_yoy'].min(), clean_df['revenue_yoy'].max(), 100)
         y_range = 0.40 - x_range
         
