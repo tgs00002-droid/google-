@@ -1,77 +1,118 @@
-# src/data.py
-from __future__ import annotations
-
-import os
-import time
+# app.py
+import streamlit as st
 import pandas as pd
-import requests
+import plotly.express as px
 
-STOCKANALYSIS_URL = "https://stockanalysis.com/stocks/goog/metrics/revenue-by-segment/"
+from src.data import load_revenue_by_product
+from src.forecast import (
+    make_product_forecasts,
+    apply_scenario_overlay,
+    quarterly_to_yearly,
+    total_rollup,
+)
+from src.metrics import yoy_growth, mix_share
 
-CACHE_DIR = os.path.join("data", "cache")
-CACHE_PATH = os.path.join(CACHE_DIR, "revenue_by_product_quarterly.csv")
+st.set_page_config(page_title="Google 10-Year Revenue Forecast", layout="wide")
 
-DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; revenue-forecast-project/1.0; +https://github.com/yourname)"
-}
+st.title("Alphabet (Google) Revenue: 10-Year Forecast by Product")
+st.caption(
+    "Quarterly revenue lines (Search, YouTube Ads, Cloud, etc.) modeled and projected 10 years forward, with scenario levers by product."
+)
 
-def load_revenue_by_product(force_refresh: bool = False, sleep_s: float = 0.5) -> pd.DataFrame:
-    """
-    Returns a tidy quarterly dataframe:
-      date (quarter end), product, revenue_usd
-    """
-    os.makedirs(CACHE_DIR, exist_ok=True)
+with st.sidebar:
+    st.header("Controls")
+    force_refresh = st.checkbox("Force refresh data from source", value=False)
+    horizon_years = st.slider("Forecast horizon (years)", 5, 15, 10)
 
-    if os.path.exists(CACHE_PATH) and not force_refresh:
-        df = pd.read_csv(CACHE_PATH, parse_dates=["date"])
-        return df
+@st.cache_data(show_spinner=False)
+def get_data(force_refresh: bool) -> pd.DataFrame:
+    return load_revenue_by_product(force_refresh=force_refresh)
 
-    time.sleep(sleep_s)
-    r = requests.get(STOCKANALYSIS_URL, headers=DEFAULT_HEADERS, timeout=30)
-    r.raise_for_status()
+@st.cache_data(show_spinner=True)
+def get_baseline_forecasts(df: pd.DataFrame, horizon_years: int) -> pd.DataFrame:
+    return make_product_forecasts(df, horizon_years=horizon_years)
 
-    # The page contains an HTML table we can read.
-    tables = pd.read_html(r.text)
-    if not tables:
-        raise RuntimeError("No tables found on source page.")
+df = get_data(force_refresh)
+products = sorted(df["product"].unique())
 
-    # First table is typically the revenue-by-segment time series.
-    wide = tables[0].copy()
+tab1, tab2, tab3, tab4 = st.tabs(["Data", "Baseline Forecast", "Scenarios", "Mix & Growth Story"])
 
-    # Expect a first column like "Date" and then product columns
-    wide.columns = [str(c).strip() for c in wide.columns]
-    if "Date" not in wide.columns:
-        raise RuntimeError(f"Unexpected columns: {wide.columns.tolist()}")
+with tab1:
+    st.subheader("Raw quarterly revenue by product")
+    st.dataframe(df.sort_values(["date", "product"]), use_container_width=True)
 
-    wide["Date"] = pd.to_datetime(wide["Date"])
-    # Convert values like "54.10B" or "675M" to numeric USD
-    def parse_money(x) -> float:
-        if pd.isna(x):
-            return float("nan")
-        s = str(x).strip().replace(",", "")
-        mult = 1.0
-        if s.endswith("B"):
-            mult = 1e9
-            s = s[:-1]
-        elif s.endswith("M"):
-            mult = 1e6
-            s = s[:-1]
-        elif s.endswith("K"):
-            mult = 1e3
-            s = s[:-1]
-        return float(s) * mult
+    p = st.selectbox("Quick chart product", products)
+    d1 = df[df["product"] == p].sort_values("date")
+    fig = px.line(d1, x="date", y="revenue_usd", title=f"{p}: Quarterly Revenue")
+    st.plotly_chart(fig, use_container_width=True)
 
-    product_cols = [c for c in wide.columns if c != "Date"]
-    for c in product_cols:
-        wide[c] = wide[c].apply(parse_money)
+with tab2:
+    st.subheader("Baseline model (SARIMAX per product, quarterly seasonality)")
+    fc = get_baseline_forecasts(df, horizon_years)
 
-    tidy = wide.melt(
-        id_vars=["Date"],
-        value_vars=product_cols,
-        var_name="product",
-        value_name="revenue_usd",
-    ).dropna()
+    p2 = st.selectbox("View forecast for product", products, key="p2")
+    f2 = fc[fc["product"] == p2].sort_values("date")
 
-    tidy = tidy.rename(columns={"Date": "date"}).sort_values(["product", "date"])
-    tidy.to_csv(CACHE_PATH, index=False)
-    return tidy
+    fig2 = px.line(f2, x="date", y="yhat", title=f"Forecast: {p2}")
+    fig2.add_scatter(x=f2["date"], y=f2["yhat_lo"], mode="lines", name="80% low")
+    fig2.add_scatter(x=f2["date"], y=f2["yhat_hi"], mode="lines", name="80% high")
+    st.plotly_chart(fig2, use_container_width=True)
+
+    yearly = quarterly_to_yearly(fc)
+    total = total_rollup(yearly)
+    figT = px.line(total.sort_values("year"), x="year", y="revenue_yhat", title="TOTAL Revenue (all products) – Baseline")
+    st.plotly_chart(figT, use_container_width=True)
+
+with tab3:
+    st.subheader("Scenario builder (extra CAGR uplift by product)")
+    st.write("Use these sliders to model revenue strategy improvements by product (pricing, growth, distribution, attach, etc.).")
+
+    uplift = {}
+    cols = st.columns(3)
+    for i, p in enumerate(products):
+        with cols[i % 3]:
+            uplift[p] = st.slider(f"{p} uplift (extra CAGR)", -0.05, 0.10, 0.00, 0.005)
+
+    fc_base = get_baseline_forecasts(df, horizon_years)
+    fc_scn = apply_scenario_overlay(fc_base, uplift)
+
+    y_base = total_rollup(quarterly_to_yearly(fc_base)).sort_values("year")
+    y_scn  = total_rollup(quarterly_to_yearly(fc_scn)).sort_values("year")
+
+    comp = y_base[["year", "revenue_yhat"]].merge(
+        y_scn[["year", "revenue_yhat"]],
+        on="year",
+        suffixes=("_baseline", "_scenario"),
+    )
+    comp["delta"] = comp["revenue_yhat_scenario"] - comp["revenue_yhat_baseline"]
+
+    st.metric("10Y total uplift (final year, scenario vs baseline)",
+              f"${comp.iloc[-1]['delta']/1e9:,.1f}B")
+
+    fig3 = px.line(comp, x="year", y=["revenue_yhat_baseline", "revenue_yhat_scenario"],
+                   title="TOTAL Revenue: Baseline vs Scenario")
+    st.plotly_chart(fig3, use_container_width=True)
+
+with tab4:
+    st.subheader("Mix and growth narrative")
+    fc = get_baseline_forecasts(df, horizon_years)
+    yearly = quarterly_to_yearly(fc)
+    mix = mix_share(yearly)
+
+    year_pick = st.selectbox("Pick a forecast year", sorted(mix["year"].unique()))
+    m = mix[mix["year"] == year_pick].sort_values("revenue_yhat", ascending=False)
+
+    figm = px.bar(m, x="product", y="mix_share", title=f"Revenue mix share – {year_pick}")
+    st.plotly_chart(figm, use_container_width=True)
+
+    # Historical YoY story (from raw data)
+    hist_yoy = yoy_growth(df).dropna()
+    p3 = st.selectbox("Historical YoY for product", sorted(hist_yoy["product"].unique()), key="p3")
+    hy = hist_yoy[hist_yoy["product"] == p3]
+    figy = px.line(hy, x="year", y="yoy", title=f"Historical YoY growth – {p3}")
+    st.plotly_chart(figy, use_container_width=True)
+
+st.caption(
+    "Products reflect Alphabet reporting lines (Search & other, YouTube ads, Cloud, subscriptions/platforms/devices, etc.). "
+    "Always sanity-check results against the latest Alphabet earnings release / 10-K."
+)
